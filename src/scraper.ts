@@ -167,8 +167,13 @@ export class LinkedInScraper {
             for (const card of jobCards) {
                 if (scrapedJobs.length >= maxJobs) break;
 
-                // Check if we already processed this card by looking for a unique attribute (e.g., data-job-id or link)
-                // Since data attributes might vary, we'll click and check the URL or Title
+                // Improved Deduplication: Check data-job-id first if available to avoid clicking
+                const cardJobId = await card.getAttribute('data-job-id');
+                const cardText = (await card.innerText()).split('\n')[0]; // simple title fallback
+
+                if (cardJobId && visitedLinks.has(cardJobId)) {
+                    continue;
+                }
 
                 // Scroll card into view to ensure it's clickable and content is rendered
                 try {
@@ -219,7 +224,27 @@ export class LinkedInScraper {
                     return { title, company, location, description, link };
                 });
 
-                if (jobData && jobData.title && !visitedLinks.has(jobData.link || jobData.title)) {
+                if (jobData && jobData.title) {
+                    // Start normalization
+                    let normalizedLink = '';
+                    if (jobData.link) {
+                        // Build absolute URL
+                        const fullLink = jobData.link.startsWith('http') ? jobData.link : `https://www.linkedin.com${jobData.link}`;
+                        // Remove query parameters for strict deduplication (keep path only: /jobs/view/123456)
+                        try {
+                            const urlObj = new URL(fullLink);
+                            // Keep only protocol, host, and pathname
+                            normalizedLink = `${urlObj.origin}${urlObj.pathname}`;
+                        } catch (e) {
+                            normalizedLink = fullLink;
+                        }
+                    }
+
+                    // Strict check against visited
+                    if ((normalizedLink && visitedLinks.has(normalizedLink)) || (cardJobId && visitedLinks.has(cardJobId))) {
+                        continue;
+                    }
+
                     // Clean up data
                     const jobEntry: Job = {
                         title: jobData.title.replace(/\n/g, '').trim(),
@@ -231,8 +256,11 @@ export class LinkedInScraper {
 
                     console.log(`+ Scraped: ${jobEntry.title} at ${jobEntry.company}`);
                     scrapedJobs.push(jobEntry);
-                    if (jobEntry.link) visitedLinks.add(jobEntry.link);
-                    else visitedLinks.add(jobEntry.title); // Fallback uniqueness
+
+                    // Add to visited
+                    if (normalizedLink) visitedLinks.add(normalizedLink);
+                    if (cardJobId) visitedLinks.add(cardJobId);
+                    if (!normalizedLink && !cardJobId) visitedLinks.add(jobEntry.title + jobEntry.company); // Last resort
 
                     processedInThisBatch++;
                     noNewJobsCount = 0;
